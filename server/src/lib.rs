@@ -115,6 +115,9 @@ impl StateInner {
                         .synchronous(sea_orm::sqlx::sqlite::SqliteSynchronous::Normal)
                         .pragma("temp_store", "memory")
                         .pragma("mmap_size", "30000000000")
+                        // Optimize (0x10002 for all tables) when opening a connection
+                        // See https://www.sqlite.org/pragma.html#pragma_optimize
+                        .pragma("optimize", "0x10002")
                 });
                 Database::connect(opts)
                     .await
@@ -250,6 +253,12 @@ pub async fn run_migrations(config: Config) -> Result<()> {
     let state = StateInner::new(config).await;
     let db = state.database().await?;
     Migrator::up(db, None).await?;
+
+    if db.get_database_backend() == sea_orm::DatabaseBackend::Sqlite {
+        // For SQLite, run optimizations after schema changes
+        // See https://www.sqlite.org/pragma.html#pragma_optimize
+        db.execute_unprepared("pragma optimize;").await?;
+    }
 
     Ok(())
 }
