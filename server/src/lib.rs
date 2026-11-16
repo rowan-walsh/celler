@@ -37,7 +37,7 @@ use axum::{
     http::{uri::Scheme, Uri},
     Router,
 };
-use sea_orm::{ConnectionTrait, Database, DatabaseConnection};
+use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection};
 use tokio::net::TcpListener;
 use tokio::sync::OnceCell;
 use tokio::time;
@@ -106,30 +106,19 @@ impl StateInner {
     async fn database(&self) -> ServerResult<&DatabaseConnection> {
         self.database
             .get_or_try_init(|| async {
-                let db = Database::connect(&self.config.database.url)
+                let mut opts = ConnectOptions::new(&self.config.database.url);
+                opts.map_sqlx_sqlite_opts(|sqlite_opts| {
+                    // Include some SQLite-specific performance optimizations
+                    // See https://phiresky.github.io/blog/2020/sqlite-performance-tuning/
+                    sqlite_opts
+                        .journal_mode(sea_orm::sqlx::sqlite::SqliteJournalMode::Wal)
+                        .synchronous(sea_orm::sqlx::sqlite::SqliteSynchronous::Normal)
+                        .pragma("temp_store", "memory")
+                        .pragma("mmap_size", "30000000000")
+                });
+                Database::connect(opts)
                     .await
-                    .map_err(ServerError::database_error);
-                if let Ok(ref db) = db {
-                    if db.get_database_backend() == sea_orm::DatabaseBackend::Sqlite {
-                        // execute some sqlite-specific performance optimizations
-                        // see https://phiresky.github.io/blog/2020/sqlite-performance-tuning/ for
-                        // more details
-                        // intentionally ignore errors from this: this is purely for performance,
-                        // not for correctness, so we can live without this
-                        _ = db
-                            .execute_unprepared(
-                                "
-                        pragma journal_mode=WAL;
-                        pragma synchronous=normal;
-                        pragma temp_store=memory;
-                        pragma mmap_size = 30000000000;
-                        ",
-                            )
-                            .await;
-                    }
-                }
-
-                db
+                    .map_err(ServerError::database_error)
             })
             .await
     }
